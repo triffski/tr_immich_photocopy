@@ -205,19 +205,47 @@ def _twin(parts):
     return t
 
 
-def immich_checksums(owner_id):
+def immich_index(owner_id):
+    """(file checksums, {(lower filename, size)} of assets whose checksum isn't a file hash).
+    immich can store a hash of the file's path instead of its bytes (checksumAlgorithm sha1-path - e.g.
+    external libraries); those can't be matched by SHA-1, so they match on filename + file size instead."""
     f = os.environ.get("CHECKSUMS_FILE")
     if f:
-        return {l.strip().lower() for l in open(f) if l.strip()}
+        loose = set()
+        lf = os.environ.get("LOOSE_FILE")  # testing: lines "name<TAB>size"
+        if lf:
+            for l in open(lf):
+                n, z = l.rstrip("\n").split("\t")
+                loose.add((n.lower(), int(z)))
+        return {l.strip().lower() for l in open(f) if l.strip()}, loose
+    sql = ("select encode(a.checksum, 'hex'), a.\"checksumAlgorithm\", lower(a.\"originalFileName\"), "
+           "coalesce(e.\"fileSizeInByte\", 0) from asset a left join asset_exif e on e.\"assetId\" = a.id "
+           f"where a.\"deletedAt\" is null and a.\"ownerId\" = '{owner_id}'")
+    r = subprocess.run(["psql", "-At", "-F", "\t", "-c", sql], capture_output=True, text=True)
+    if r.returncode == 0:
+        have, loose = set(), set()
+        for l in r.stdout.splitlines():
+            parts = l.split("\t")
+            if len(parts) < 4:
+                continue
+            if "path" in parts[1].lower():
+                loose.add((parts[2], int(parts[3] or 0)))
+            elif parts[0]:
+                have.add(parts[0])
+        return have, loose
     last = ""
-    for table in ("asset", "assets"):  # older Immich used the plural
+    for table in ("asset", "assets"):  # older immich: no checksumAlgorithm column, and the plural table name
         sql = (f"select encode(checksum, 'hex') from {table} "
                f"where \"deletedAt\" is null and \"ownerId\" = '{owner_id}'")
         r = subprocess.run(["psql", "-At", "-c", sql], capture_output=True, text=True)
         if r.returncode == 0:
-            return {l.strip() for l in r.stdout.splitlines() if l.strip()}
+            return {l.strip() for l in r.stdout.splitlines() if l.strip()}, set()
         last = r.stderr.strip()
     raise RuntimeError(f"immich Postgres query failed: {last}")
+
+
+def immich_checksums(owner_id):
+    return immich_index(owner_id)[0]
 
 
 key_state = {}  # NAME -> {"ok", "msg", "at"}
@@ -605,7 +633,7 @@ def scan(root, excludes):
         set_progress(running=True, phase="Reading Immich checksums", done=0, total=0, root=root,
                      error="", items=[], started=time.time(), finished=0, cancel=False)
         owner, email = account()
-        have = immich_checksums(owner)
+        have, loose = immich_index(owner)
         try:
             names = immich_names(owner)
         except Exception as e:  # never let the same-name check break a scan
@@ -649,6 +677,9 @@ def scan(root, excludes):
             except OSError:
                 size, mtime = 0, 0
             status = "unreadable" if h is None else ("sha1" if h in have else "missing")
+            by_size = status == "missing" and (os.path.basename(p).lower(), size) in loose
+            if by_size:
+                status = "sha1"
             twins = names.get(os.path.basename(p).lower(), []) if status == "missing" else []
             if twins:
                 status = "name"
@@ -660,7 +691,7 @@ def scan(root, excludes):
                           "source": source_of(os.path.relpath(p, root), *cams.get(p, ("", "", {}))[:2]),
                           "meta": cams.get(p, ("", "", {}))[2],
                           "day": (cams.get(p, ("", "", {}))[2].get("dt") or "")[:10].replace(":", "-"),
-                          "damaged": p in broken,
+                          "damaged": p in broken, "loose": by_size,
                           "protected": any(under(p, l) for l in LIBRARY_PATHS)})
         for it in items:
             if it["status"] == "name":
@@ -680,6 +711,118 @@ def scan(root, excludes):
         set_progress(phase="Failed", error=str(e))
     finally:
         set_progress(running=False)
+
+
+# ---------- local folders (on the browser's computer) ----------
+# The browser hashes the files itself and sends only names, sizes and SHA-1s; a file's bytes only come
+# here when it's uploaded, and are checked against the scan's hash before they go on to immich.
+# Local items are never in `known`, so copy / move / recycle / delete refuse them by construction.
+
+LOCAL = "local:"
+
+
+def local_scan(folder, files):
+    folder = (folder or "Local folder").replace("/", "-").strip() or "Local folder"
+    owner, email = account()
+    have, loose = immich_index(owner)
+    try:
+        names = immich_names(owner)
+    except Exception as e:
+        print(f"same-name lookup failed: {e}", flush=True)
+        names = {}
+    items = []
+    for f in files:
+        rel = str(f.get("rel", "")).strip("/")
+        name = os.path.basename(rel)
+        if not rel or Path(name).suffix.lower() not in MEDIA:
+            continue
+        h = str(f.get("sha1") or "").lower()
+        size, mtime = int(f.get("size") or 0), float(f.get("mtime") or 0)
+        status = "sha1" if h in have else "missing"
+        by_size = status == "missing" and (name.lower(), size) in loose
+        if by_size:
+            status = "sha1"
+        twins = names.get(name.lower(), []) if status == "missing" else []
+        if twins:
+            status = "name"
+        items.append({"path": f"{LOCAL}{folder}/{rel}", "rel": rel, "name": name, "size": size, "mtime": mtime,
+                      "status": status, "twins": twins, "kind": "video" if Path(name).suffix.lower() in VIDEO else "image",
+                      "camera": "", "source": source_of(rel, "", ""), "meta": {}, "day": "", "damaged": False,
+                      "loose": by_size, "protected": True, "local": True, "sha1": h})
+    for it in items:
+        check_item(it)
+    with state_lock:
+        known.clear()
+    set_progress(running=False, phase="Done", error="", root=f"{LOCAL}{folder}", items=items, account=email,
+                 done=len(items), total=len(items), started=time.time(), finished=time.time())
+    return items
+
+
+def local_upload(p, stream, length):
+    """One local file's bytes -> temp file (hash checked against the scan) -> immich. Returns a dict."""
+    with state_lock:
+        it = next((i for i in state["items"] if i["path"] == p and i.get("local")), None)
+    if not it:
+        return {"error": "not in current scan"}
+    if it["status"] != "missing":
+        return {"skipped": "already in immich" if it["status"] == "sha1" else "filename match - upgrade isn't available for local folders"}
+    tmp = CACHE / "local" / uuid.uuid4().hex
+    tmp.mkdir(parents=True, exist_ok=True)
+    f = tmp / it["name"].replace("/", "_")
+    try:
+        h, left = hashlib.sha1(), length
+        with open(f, "wb") as out:
+            while left > 0:
+                blk = stream.read(min(1 << 20, left))
+                if not blk:
+                    break
+                h.update(blk)
+                out.write(blk)
+                left -= len(blk)
+        if left or h.hexdigest() != it["sha1"]:
+            return {"error": "file changed since the scan - scan again"}
+        os.utime(f, (it["mtime"], it["mtime"]))
+        if not decodes(str(f)):
+            with state_lock:
+                it["damaged"] = True
+            return {"skipped": "damaged - doesn't decode"}
+        s, aid = upload(str(f))
+        set_status({p}, "sha1")
+        return {"status": s, "id": aid}
+    except Exception as e:
+        traceback.print_exc()
+        return {"error": str(e)}
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def local_finish(created, done, descriptor, albums):
+    """After a local upload run: tag the new assets, file them into albums named after their folders."""
+    res = {}
+    if created:
+        d = (descriptor or "").replace("/", "-").strip()
+        res["tag"] = "src_photocopy/" + time.strftime("%Y-%m-%d") + (f" - {d}" if d else "")
+        try:
+            res["tagged"] = tag_assets(res["tag"], created)
+        except Exception as e:
+            res["failed"] = [["(tagging)", str(e)]]
+    if albums and done:
+        with state_lock:
+            root = state["root"]
+            rels = {i["path"]: i["rel"] for i in state["items"] if i.get("local")}
+        top = root[len(LOCAL):] if root.startswith(LOCAL) else "Local folder"
+        groups = {}
+        for p, aid in done:
+            if p in rels and aid:
+                rel = os.path.dirname(rels[p])
+                groups.setdefault(top + (f" / {rel.replace('/', ' / ')}" if rel else ""), []).append(aid)
+        if groups:
+            try:
+                made, added = album_assets(groups)
+                res["albums"] = f"{added} added to {len(groups)} album(s), {made} new"
+            except Exception as e:
+                res.setdefault("failed", []).append(["(albums)", str(e)])
+    return res
 
 
 # ---------- background jobs (copy / upload / upgrade / recycle / delete) ----------
@@ -1240,11 +1383,21 @@ class H(BaseHTTPRequestHandler):
         self.send(404, {"error": "not found"})
 
     def do_POST(self):
+        global ACTIVE
         n = int(self.headers.get("Content-Length", 0))
-        body = json.loads(self.rfile.read(n) or b"{}")
         u = urlparse(self.path)
+        if u.path == "/api/local/upload":  # raw file bytes, not JSON
+            if not can_upload():
+                self.rfile.read(n)
+                return self.send(400, {"error": f"Upload is off for {ACTIVE or 'this account'}"})
+            with state_lock:
+                busy = state["running"] or job["running"]
+            if busy:
+                self.rfile.read(n)
+                return self.send(409, {"error": "Wait for the scan / job to finish"})
+            return self.send(200, local_upload(parse_qs(u.query).get("p", [""])[0], self.rfile, n))
+        body = json.loads(self.rfile.read(n) or b"{}")
         if u.path == "/api/account":
-            global ACTIVE
             n = _name(body.get("name"))
             if not n:
                 return self.send(400, {"error": "Unknown account"})
@@ -1294,6 +1447,19 @@ class H(BaseHTTPRequestHandler):
             ex = [e.strip() for e in body.get("excludes", []) if e.strip()]
             threading.Thread(target=scan, args=(root, ex), daemon=True).start()
             return self.send(200, {"ok": True})
+        if u.path == "/api/local":
+            with state_lock:
+                if state["running"] or job["running"]:
+                    return self.send(409, {"error": "Wait for the scan / job to finish"})
+            try:
+                local_scan(body.get("folder", ""), body.get("files") or [])
+            except Exception as e:
+                traceback.print_exc()
+                return self.send(500, {"error": str(e)})
+            return self.send(200, {"ok": True})
+        if u.path == "/api/local/finish":
+            return self.send(200, local_finish(body.get("created") or [], body.get("done") or [],
+                                               body.get("descriptor", ""), bool(body.get("albums"))))
         if u.path == "/api/stop":
             set_progress(cancel=True)
             with state_lock:
@@ -1335,6 +1501,7 @@ if __name__ == "__main__":
     import signal
     signal.signal(signal.SIGTERM, lambda *_: os._exit(0))  # PID 1 ignores SIGTERM by default -> exit 137 on stop
     CACHE.mkdir(parents=True, exist_ok=True)
+    shutil.rmtree(CACHE / "local", ignore_errors=True)  # temp copies of local uploads left by a crash
     check_key()
     for n, st in key_state.items():
         print(f"Immich key {n}: {'OK - ' if st['ok'] else ''}{st['msg']}{' (no upload)' if n in NO_UPLOAD else ''}", flush=True)

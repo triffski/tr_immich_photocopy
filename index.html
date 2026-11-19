@@ -54,9 +54,9 @@ input[type=text]:focus { outline: 2px solid var(--accent); outline-offset: -1px;
 .tnode input { margin: 0; accent-color: var(--warn); }
 .tnode.skip label { color: var(--mute); text-decoration: line-through; }
 #skipn { font-style: normal; color: var(--warn); }
-.scanrow { display: flex; justify-content: flex-end; margin-top: 10px; }
+.scanrow { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
 .srcgrid { grid-template-columns: 2fr 1fr; }
-#browse, #dbrowse, button.big { width: 128px; height: 40px; padding: 0 14px; }
+#browse, #dbrowse, #local, button.big { width: 128px; height: 40px; padding: 0 14px; }
 button.big { font-size: 14px; font-weight: 650; }
 button.go { background: transparent; border-color: var(--ok); color: var(--ok); }
 button.go:hover:not(:disabled) { background: color-mix(in srgb, var(--ok) 12%, transparent); border-color: var(--ok); }
@@ -272,6 +272,8 @@ body.viewing .actionbar { bottom: var(--vh, 45vh); }
 .tile.viewing { outline: 2px dashed var(--mute); outline-offset: 2px; }
 .m-ingest, .m-copy, .m-move, .m-recycle { display: none; }
 body.ingest .m-ingest, body.copy .m-copy, body.move .m-move, body.recycle .m-recycle { display: inline-flex; }
+body.local #upgrade, body.local #del, body.local .m-copy, body.local .m-move, body.local .m-recycle, body.local .nolocal { display: none; }
+.tag.loose { background: transparent; border: 1px dashed currentColor; }
 @media (max-width: 760px) {
 	.two { grid-template-columns: 1fr; }
 	.wrap { padding: 0 16px; }
@@ -299,7 +301,9 @@ body.ingest .m-ingest, body.copy .m-copy, body.move .m-move, body.recycle .m-rec
 		<div class="two srcgrid">
 			<div class="field"><span>Folder:</span>
 				<div class="pick"><div class="inline"><input type="text" id="root" placeholder="/volume1/..."><button id="browse">Browse</button></div><div id="browser" class="browser"></div></div>
-				<div class="scanrow"><button class="go big" id="scan">Scan</button></div>
+				<div class="scanrow"><button id="local" title="Scan a folder on this computer instead of the NAS
+Shows what's missing from immich and uploads it - nothing else touches the local files">Local folder</button><button class="go big" id="scan">Scan</button></div>
+				<input type="file" id="lpick" webkitdirectory multiple hidden>
 			</div>
 			<div class="field"><span>Skip folder(s): <em id="skipn"></em></span>
 				<div id="tree" class="tree off"><div class="treemsg">Choose a source folder first</div></div>
@@ -319,7 +323,7 @@ body.ingest .m-ingest, body.copy .m-copy, body.move .m-move, body.recycle .m-rec
 			<div class="field"><span>Tag for new uploads:</span>
 				<div class="prefixed"><span class="pre" title="Fixed - the date is added automatically"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M4 7V5a4 4 0 1 1 8 0v2h.5A1.5 1.5 0 0 1 14 8.5v5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 13.5v-5A1.5 1.5 0 0 1 3.5 7zm1.5 0h5V5a2.5 2.5 0 0 0-5 0z"/></svg><span id="tagpre"></span></span><input type="text" id="desc"></div>
 			</div>
-			<div class="opts"><label class="tog" title="Upgraded files are moved to the share's recycle bin"><input type="checkbox" id="delafter"> Delete source files once they're in immich</label></div>
+			<div class="opts nolocal"><label class="tog" title="Upgraded files are moved to the share's recycle bin"><input type="checkbox" id="delafter"> Delete source files once they're in immich</label></div>
 			<div class="opts tight"><label class="tog" title="Upgraded photos are applied in-place, retaining albums, tags, favourites and description"><input type="checkbox" id="albums"> Create albums from folders</label></div>
 		</div>
 		<div class="pane" id="pane-copy">
@@ -395,7 +399,9 @@ function setMode(m) {
 document.querySelectorAll("#modes button").forEach(b => b.onclick = () => setMode(b.dataset.m));
 
 // ---- tag preview ----
-const folderName = () => ($("#root").value.trim().replace(/\/+$/, "").split("/").pop() || "");
+const LOCALP = "local:";
+const isLocal = () => $("#root").value.trim().startsWith(LOCALP);
+const folderName = () => ($("#root").value.trim().replace(LOCALP, "").replace(/\/+$/, "").split("/").pop() || "");
 function stamp() {
 	const d = new Date(), p = n => String(n).padStart(2, "0");
 	return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
@@ -554,7 +560,7 @@ function renderList(list, io) {
 			<td>${esc(it.camera || "")}</td>
 			<td class="n">${fmt(it.size)}${it.status === "name" && it.twins.length === 1 && it.twins[0].size ? ` <span class="lbl">vs ${fmt(it.twins[0].size)}</span>` : ""}</td>
 			<td>${d.toLocaleDateString("en-GB")} ${d.toLocaleTimeString("en-GB", {hour: "2-digit", minute: "2-digit"})}</td>
-			<td><span class="tag ${it.status}">${label}</span> ${vtag(it)}${it.damaged ? ` <span class="tag dmgt">Damaged</span>` : ""}</td>`;
+			<td><span class="tag ${it.status}${it.loose ? " loose" : ""}"${it.loose ? ` title="${LOOSE}"` : ""}>${label}</span> ${vtag(it)}${it.damaged ? ` <span class="tag dmgt">Damaged</span>` : ""}</td>`;
 		tr.title = info(it).map(([k, v]) => `${k}: ${v}`).join("\n");
 		tr.addEventListener("dblclick", e => { e.preventDefault(); view(it.path); });
 		tr.addEventListener("click", () => { if (!String(window.getSelection())) selToggle(it.path, tr); });
@@ -574,7 +580,7 @@ function render() {
 	$("#grid").classList.toggle("list", viewMode === "list");
 	$("#grid").innerHTML = list.length ? "" : `<div class="empty">${items.length ? "Nothing in this view" : "Scan a folder to start"}</div>`;
 	const io = new IntersectionObserver(es => es.forEach(e => {
-		if (e.isIntersecting) { const im = e.target; im.src = im.dataset.src; io.unobserve(im); }
+		if (e.isIntersecting) { const im = e.target; io.unobserve(im); loadThumb(im); }
 	}), {rootMargin: "400px"});
 	if (viewMode === "list") {
 		if (list.length) renderList(list, io);
@@ -598,7 +604,7 @@ function render() {
 			<div class="sub2 rel" title="${esc(it.rel)}"><bdi dir="ltr">${esc(it.rel)}</bdi></div>
 			<div class="sub2">${it.source ? esc(it.source) : "Unknown source"}${it.camera && it.source !== it.camera ? ` &middot; ${esc(it.camera)}` : ""}</div>
 			${twin}
-			<div class="foot"><span class="sub2">${fmt(it.size)} &middot; ${new Date(it.mtime * 1000).toLocaleDateString("en-GB")}</span><span class="tag ${it.status}">${label}</span></div></div>`;
+			<div class="foot"><span class="sub2">${fmt(it.size)} &middot; ${new Date(it.mtime * 1000).toLocaleDateString("en-GB")}</span><span class="tag ${it.status}${it.loose ? " loose" : ""}"${it.loose ? ` title="${LOOSE}"` : ""}>${label}</span></div></div>`;
 		c.querySelector(".cp").addEventListener("click", e => { e.stopPropagation(); copyText(it.path, e.currentTarget); });
 		c.dataset.path = it.path;
 		c.title = info(it).map(([k, v]) => `${k}: ${v}`).join("\n");
@@ -622,7 +628,7 @@ function info(it) {
 	const rows = [
 		["File", it.name],
 		["Folder", it.rel.includes("/") ? it.rel.slice(0, it.rel.lastIndexOf("/")) : "(top level)"],
-		["Status", {missing: "Not in immich", sha1: "In immich", name: "Filename match in immich", unreadable: "Unreadable"}[it.status]],
+		["Status", it.loose ? "In immich (filename + size)" : {missing: "Not in immich", sha1: "In immich", name: "Filename match in immich", unreadable: "Unreadable"}[it.status]],
 		["Source", it.source || "Unknown"],
 		["Camera", it.camera || "None in metadata"],
 		["Size", fmt(it.size)],
@@ -647,7 +653,9 @@ function view(p) {
 	const q = encodeURIComponent(p);
 	$("#vbody").classList.remove("actual");
 	$("#vfit").textContent = "Actual size";
-	$("#vbody").innerHTML = it.kind === "video" ? `<video src="/file?p=${q}" controls autoplay muted></video>` : `<img src="/file?p=${q}" alt="">`;
+	const src = it.local ? localFile(it) : `/file?p=${q}`;
+	$("#vbody").innerHTML = it.kind === "video" ? `<video src="${src}" controls autoplay muted></video>` : `<img src="${src}" alt="">`;
+	if (it.local) { const m = $("#vbody").firstElementChild; m.onerror = () => localThumb(p).then(u => { $("#vbody").innerHTML = `<img src="${u}" alt="">`; }); }
 	$("#vsel").textContent = sel.has(p) ? "Deselect" : "Select";
 	$("#vinfo").innerHTML = `<dl>${info(it).map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>` + comparePanel(it) + `<div class="full">${esc(it.path)}</div>`;
 	wireCompare(it);
@@ -730,7 +738,7 @@ function copyText(t, btn) {
 const byPath = () => new Map(items.map(i => [i.path, i]));
 function picked(status) {
 	const m = byPath();
-	return [...sel].filter(p => m.has(p) && m.get(p).status === status && (status !== "sha1" || !m.get(p).protected) && (status === "sha1" || !m.get(p).damaged));
+	return [...sel].filter(p => m.has(p) && m.get(p).status === status && (status !== "sha1" || (!m.get(p).protected && !m.get(p).loose)) && (status === "sha1" || !m.get(p).damaged));
 }
 let scanning = false;
 const STATUS_TIP = {missing: "No exact copy in immich", name: "Same filename in immich, different file - upgradable",
@@ -822,13 +830,19 @@ function folderPicker(box, btn, input, onPick, onClose) {
 	$(btn).onclick = () => open() ? close() : go();
 	return {open, close};
 }
-const srcPicker = folderPicker("#browser", "#browse", "#root", p => { store.set("tim_root", p); tagPreview(); }, loadTree);
+const srcPicker = folderPicker("#browser", "#browse", "#root", p => { store.set("tim_root", p); tagPreview(); setLocal(); }, loadTree);
+$("#root").addEventListener("input", () => setLocal());
 const closeBrowser = srcPicker.close;
 const destPicker = folderPicker("#dbrowser", "#dbrowse", "#dest", p => { store.set("tim_dest", p); controls(); });
 
 // ---- skip-folder tree (relative paths under the source folder) ----
 let skips = new Set(), treeRoot = "";
 async function lsDirs(p) {
+	if (p.startsWith(LOCALP)) {
+		const rel = p.slice(LOCALP.length).split("/").slice(1).join("/"), pre = rel ? rel + "/" : "", out = new Set();
+		items.forEach(i => { if (i.rel.startsWith(pre)) { const r = i.rel.slice(pre.length); if (r.includes("/")) out.add(r.split("/")[0]); } });
+		return [...out].sort((a, b) => a.localeCompare(b, "en", {numeric: true}));
+	}
 	const r = await fetch("/api/ls?p=" + encodeURIComponent(p)).then(r => r.json());
 	return r.path === p ? r.dirs : null;
 }
@@ -878,6 +892,7 @@ $("#root").addEventListener("input", controls);
 
 // ---- scan ----
 $("#scan").onclick = async () => {
+	if (isLocal()) return $("#lpick").click();
 	closeBrowser();
 	const excludes = [];  // scan everything; skipped folders are filtered live
 	const r = await fetch("/api/scan", {method: "POST", body: JSON.stringify({root: $("#root").value.trim(), excludes})});
@@ -903,11 +918,12 @@ function watch() {
 			$("#prog").style.width = "0";
 			$("#status").textContent = "";
 			if (s.error) { $("#log").textContent = s.error; return; }
-			items = s.items; acct(s); render();
+			items = s.items; acct(s); setLocal(); render();
 		}
 	}, 700);
 }
 $("#stop").onclick = async () => {
+	if (localBusy) { localCancel = true; $("#stop").disabled = true; $("#stop").textContent = "Stopping..."; return; }
 	$("#stop").disabled = true; $("#stop").textContent = "Stopping...";
 	await fetch("/api/stop", {method: "POST", body: "{}"});
 };
@@ -935,7 +951,7 @@ $("#acct").onchange = async e => {
 	items = []; sel.clear(); approved.clear(); forced.clear(); render();
 	const s = await fetch("/api/status").then(r => r.json());
 	acct(s);
-	if (!j.error && had) $("#scan").click();
+	if (!j.error && had) { if (isLocal()) { if (localList.length) matchLocal(); } else $("#scan").click(); }
 };
 
 // ---- centred confirm ----
@@ -1039,6 +1055,7 @@ $("#move").onclick = async () => {
 	act("/api/move", p, {dest, keep_tree: $("#keep").checked}, `Moved to ${dest}:`, $("#move"));
 };
 $("#upload").onclick = async () => {
+	if (isLocal()) return uploadLocal(picked("missing"));
 	const descriptor = $("#desc").value.trim() || folderName();
 	if ($("#delafter").checked && !await ask("Upload", `Upload ${picked("missing").length} files and move each source file to the share's recycle bin once it's in immich?`, true)) return;
 	act("/api/upload", picked("missing"), {descriptor, albums: $("#albums").checked, delete_after: $("#delafter").checked}, "Uploaded to immich:", $("#upload"));
@@ -1089,7 +1106,7 @@ $("#del").onclick = async () => {
 		(notIn ? `\n\nNOT FOUND in immich: ${notIn} file${notIn === 1 ? "" : "s"} - this may be the only copy!` : ""))) return;
 	act("/api/delete", p, {}, "Deleted (to recycle bin):", $("#del"));
 };
-function exact() { return live().filter(i => i.status === "sha1" && !i.protected); }
+function exact() { return live().filter(i => i.status === "sha1" && !i.protected && !i.loose); }
 $("#recyall").onclick = async () => {
 	const p = exact().map(i => i.path);
 	if (!p.length) return;
@@ -1102,6 +1119,225 @@ $("#recycle").onclick = async () => {
 	act("/api/recycle", p, {}, "Moved to recycle bin:", $("#recycle"));
 };
 
+// ---- local folders (on this computer) ----
+// The browser reads the picked folder and hashes each file; only names, sizes and SHA-1s go to the server.
+// Bytes leave this computer only on Upload. Nothing here can change the local files.
+const LOOSE = "immich stores a path hash for this asset (e.g. an external library), so it's matched on filename + file size, not the file's bytes";
+const MEDIA_EXT = new Set("jpg jpeg heic heif png gif webp tif tiff bmp dng cr2 cr3 nef arw orf rw2 raf srw pef mp4 mov m4v avi mts m2ts 3gp mkv webm".split(" "));
+const VIDEO_EXT = new Set("mp4 mov m4v avi mts m2ts 3gp mkv webm".split(" "));
+const SKIP_SEG = new Set(["#recycle", "@eaDir", ".sync", ".stversions", ".stfolder", "__MACOSX", ".Spotlight-V100", ".fseventsd"]);
+const LF = new Map();  // local path -> File, for thumbnails, preview and upload (gone after a page reload)
+let localList = [], localFolder = "", localBusy = false, localCancel = false;
+const extOf = n => (n.match(/\.([^./]+)$/) || ["", ""])[1].toLowerCase();
+
+class SHA1 {  // streaming, for files too big to hash in one go (and plain-http pages, where crypto.subtle is missing)
+	constructor() { this.h = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0]; this.buf = new Uint8Array(64); this.bl = 0; this.len = 0; this.w = new Int32Array(80); }
+	block(d, o) {
+		const w = this.w;
+		for (let i = 0; i < 16; i++) w[i] = (d[o + 4 * i] << 24) | (d[o + 4 * i + 1] << 16) | (d[o + 4 * i + 2] << 8) | d[o + 4 * i + 3];
+		for (let i = 16; i < 80; i++) { const x = w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]; w[i] = (x << 1) | (x >>> 31); }
+		let [a, b, c, e4, e] = this.h;
+		for (let i = 0; i < 80; i++) {
+			const f = i < 20 ? ((b & c) | (~b & e4)) + 0x5A827999 : i < 40 ? (b ^ c ^ e4) + 0x6ED9EBA1 : i < 60 ? ((b & c) | (b & e4) | (c & e4)) + 0x8F1BBCDC : (b ^ c ^ e4) + 0xCA62C1D6;
+			const t = (((a << 5) | (a >>> 27)) + f + e + w[i]) | 0;
+			e = e4; e4 = c; c = (b << 30) | (b >>> 2); b = a; a = t;
+		}
+		const h = this.h;
+		h[0] = (h[0] + a) | 0; h[1] = (h[1] + b) | 0; h[2] = (h[2] + c) | 0; h[3] = (h[3] + e4) | 0; h[4] = (h[4] + e) | 0;
+	}
+	update(d) {
+		let i = 0;
+		this.len += d.length;
+		if (this.bl) {
+			const n = Math.min(64 - this.bl, d.length);
+			this.buf.set(d.subarray(0, n), this.bl); this.bl += n; i = n;
+			if (this.bl < 64) return;
+			this.block(this.buf, 0); this.bl = 0;
+		}
+		for (; i + 64 <= d.length; i += 64) this.block(d, i);
+		if (i < d.length) { this.buf.set(d.subarray(i)); this.bl = d.length - i; }
+	}
+	hex() {
+		const L = this.len, p = new Uint8Array((this.bl < 56 ? 56 : 120) - this.bl + 8), n = p.length;
+		const hi = Math.floor(L / 0x20000000), lo = (L % 0x20000000) * 8;
+		p[0] = 0x80;
+		for (let k = 0; k < 4; k++) { p[n - 8 + k] = hi >>> (24 - 8 * k); p[n - 4 + k] = lo >>> (24 - 8 * k); }
+		this.update(p);
+		return this.h.map(x => (x >>> 0).toString(16).padStart(8, "0")).join("");
+	}
+}
+async function sha1File(f) {
+	if (window.crypto && crypto.subtle && f.size <= 256e6) {
+		const d = await crypto.subtle.digest("SHA-1", await f.arrayBuffer());
+		return [...new Uint8Array(d)].map(b => b.toString(16).padStart(2, "0")).join("");
+	}
+	const h = new SHA1();
+	for (let o = 0; o < f.size; o += 8 << 20) {
+		if (localCancel) return "";
+		h.update(new Uint8Array(await f.slice(o, o + (8 << 20)).arrayBuffer()));
+	}
+	return h.hex();
+}
+
+function setLocal() {
+	const on = isLocal();
+	document.body.classList.toggle("local", on);
+	document.querySelectorAll("#modes button").forEach(b => {
+		const off = on && b.dataset.m !== "ingest";
+		b.disabled = off;
+		b.title = off ? "Not available for local folders - the browser can only read them" : "";
+	});
+	if (on && !document.body.classList.contains("ingest")) setMode("ingest");
+}
+function bar(phase, done, total) {
+	$("#scanbar").classList.add("on");
+	$("#phase").textContent = phase;
+	$("#pct").textContent = total ? `${done.toLocaleString()} / ${total.toLocaleString()}` : "";
+	$("#prog").style.width = total ? (100 * done / total) + "%" : "0";
+}
+function barEnd() {
+	$("#scanbar").classList.remove("on");
+	$("#stop").disabled = false; $("#stop").textContent = "Stop";
+	$("#prog").style.width = "0";
+	localBusy = false; scanning = false; controls();
+}
+$("#local").onclick = () => $("#lpick").click();
+$("#lpick").onchange = async e => {
+	const all = [...e.target.files];
+	e.target.value = "";
+	if (!all.length || localBusy || jobbing) return;
+	closeBrowser();
+	const files = all.filter(f => {
+		const segs = (f.webkitRelativePath || f.name).split("/");
+		return MEDIA_EXT.has(extOf(f.name)) && !f.name.startsWith("._") && !segs.slice(0, -1).some(s => SKIP_SEG.has(s) || s.startsWith(".Trash"));
+	});
+	localFolder = (all[0].webkitRelativePath || "").split("/")[0] || "Local folder";
+	if (!files.length) { $("#log").textContent = `No photos or videos in ${localFolder}`; return; }
+	localBusy = true; localCancel = false; scanning = true; controls();
+	items = []; sel.clear(); devSel.clear(); approved.clear(); forced.clear(); LF.clear(); thumbs.clear(); render(); $("#log").textContent = "";
+	$("#status").textContent = "Scanning...";
+	const out = new Array(files.length);
+	let next = 0, done = 0;
+	const worker = async () => {
+		while (!localCancel && next < files.length) {
+			const i = next++, f = files[i];
+			let h = "";
+			try { h = await sha1File(f); } catch (err) { h = ""; }
+			out[i] = {rel: (f.webkitRelativePath || f.name).split("/").slice(1).join("/") || f.name, size: f.size, mtime: f.lastModified / 1000, sha1: h, f};
+			if (++done % 10 === 0 || done === files.length) bar(`SHA-1 in this browser (${localFolder})`, done, files.length);
+		}
+	};
+	bar(`SHA-1 in this browser (${localFolder})`, 0, files.length);
+	await Promise.all([1, 2, 3, 4].map(worker));
+	if (localCancel) { barEnd(); $("#status").textContent = ""; $("#log").textContent = "Scan stopped"; return; }
+	localList = out.filter(x => x && x.sha1);
+	const bad = out.length - localList.length;
+	await matchLocal();
+	if (bad) $("#log").textContent = `${bad} file${bad === 1 ? "" : "s"} couldn't be read`;
+};
+async function matchLocal() {
+	localBusy = true; scanning = true; controls();
+	bar("Matching with immich", 0, 0);
+	const r = await fetch("/api/local", {method: "POST", body: JSON.stringify({folder: localFolder, files: localList.map(({f, ...x}) => x)})}).then(r => r.json()).catch(e => ({error: e.message}));
+	barEnd();
+	$("#status").textContent = "";
+	if (r.error) { $("#log").textContent = r.error === "not found" ? "Server is running old code - restart the container" : r.error; return; }
+	const s = await fetch("/api/status").then(r => r.json());
+	LF.clear();
+	const top = s.root;
+	localList.forEach(x => LF.set(`${top}/${x.rel}`, x.f));
+	items = s.items; acct(s);
+	$("#root").value = top; setLocal(); tagPreview(); skips.clear(); loadTree(); render();
+}
+
+// thumbnails and preview, made in the browser from the picked files
+const thumbs = new Map();
+let thumbRun = 0;
+const thumbWait = [];
+const PH = t => "data:image/svg+xml," + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="320" height="240" viewBox="0 0 320 240"><rect width="320" height="240" fill="#333"/><text x="160" y="128" font-family="sans-serif" font-size="22" fill="#aaa" text-anchor="middle">${esc(t)}</text></svg>`);
+function loadThumb(im) {
+	const p = (im.closest("[data-path]") || {dataset: {}}).dataset.path || "";
+	if (p.startsWith(LOCALP)) localThumb(p).then(u => { im.src = u; });
+	else im.src = im.dataset.src;
+}
+function localThumb(p) {
+	if (!thumbs.has(p)) thumbs.set(p, new Promise(ok => { thumbWait.push([p, ok]); pumpThumbs(); }));
+	return thumbs.get(p);
+}
+function pumpThumbs() {
+	while (thumbRun < 3 && thumbWait.length) {
+		const [p, ok] = thumbWait.shift();
+		thumbRun++;
+		makeThumb(p).then(ok, () => ok(PH(extOf(p).toUpperCase()))).finally(() => { thumbRun--; pumpThumbs(); });
+	}
+}
+function videoFrame(f) {
+	return new Promise((ok, no) => {
+		const v = document.createElement("video"), u = URL.createObjectURL(f);
+		const end = x => { clearTimeout(t); v.removeAttribute("src"); v.load(); URL.revokeObjectURL(u); x(); };
+		const t = setTimeout(() => end(no), 15000);
+		v.muted = true; v.preload = "auto";
+		v.onloadeddata = () => { v.currentTime = Math.min(1, (v.duration || 0) / 2); };
+		v.onseeked = () => { const c = document.createElement("canvas"); c.width = v.videoWidth; c.height = v.videoHeight; c.getContext("2d").drawImage(v, 0, 0); end(() => ok(c)); };
+		v.onerror = () => end(no);
+		v.src = u;
+	});
+}
+async function makeThumb(p) {
+	const f = LF.get(p), ext = extOf(p);
+	if (!f) return PH("Pick the folder again");
+	const src = VIDEO_EXT.has(ext) ? await videoFrame(f) : await createImageBitmap(f);  // RAW / HEIC outside Safari throw -> placeholder
+	const k = Math.min(1, 640 / Math.max(src.width, src.height)), c = document.createElement("canvas");
+	c.width = Math.max(1, Math.round(src.width * k)); c.height = Math.max(1, Math.round(src.height * k));
+	c.getContext("2d").drawImage(src, 0, 0, c.width, c.height);
+	if (src.close) src.close();
+	const b = await new Promise(r => c.toBlob(r, "image/jpeg", 0.8));
+	return URL.createObjectURL(b);
+}
+let viewURL = "";
+function localFile(it) {
+	if (viewURL) URL.revokeObjectURL(viewURL);
+	const f = LF.get(it.path);
+	viewURL = f ? URL.createObjectURL(f) : "";
+	return viewURL || PH("Pick the folder again");
+}
+
+// upload: one file at a time from this browser, through PhotoCopy (hash checked) to immich
+async function uploadLocal(paths) {
+	if (localBusy || jobbing || !paths.length) return;
+	const gone = paths.filter(p => !LF.has(p));
+	if (gone.length === paths.length) return tell("Pick the folder again to upload\nThe browser forgets local files when the page reloads.");
+	const descriptor = $("#desc").value.trim() || folderName(), albums = $("#albums").checked;
+	localBusy = true; localCancel = false; scanning = true; controls();
+	$("#actionbar").classList.remove("show"); $("#log").textContent = "";
+	const res = {done: 0, skipped: [], failed: gone.map(p => [p, "pick the folder again"])}, created = [], up = [];
+	let n = 0;
+	for (const p of paths) {
+		if (localCancel) { res.stopped = true; break; }
+		bar("Uploading from this browser", n, paths.length);
+		if (!LF.has(p)) { n++; continue; }
+		let r;
+		try { r = await fetch("/api/local/upload?p=" + encodeURIComponent(p), {method: "POST", body: LF.get(p)}).then(r => r.json()); }
+		catch (e) { r = {error: "upload interrupted - " + e.message}; }
+		if (r.error) { res.failed.push([p, r.error]); mark(p, "failed: " + r.error, "upload"); }
+		else if (r.skipped) { res.skipped.push([p, r.skipped]); mark(p, "skipped: " + r.skipped, "upload"); }
+		else {
+			if (r.status === "duplicate") res.skipped.push([p, "already in immich - not tagged"]);
+			else { res.done++; if (r.id) created.push(r.id); }
+			if (r.id) up.push([p, r.id]);
+			mark(p, "done", "upload");
+		}
+		n++;
+	}
+	bar("Tagging", 0, 0);
+	if (created.length || (albums && up.length)) {
+		const f = await fetch("/api/local/finish", {method: "POST", body: JSON.stringify({created, done: up, descriptor, albums})}).then(r => r.json()).catch(e => ({failed: [["(tagging)", e.message]]}));
+		Object.assign(res, f, {failed: res.failed.concat(f.failed || [])});
+	}
+	barEnd();
+	finishJob({kind: "upload", total: paths.length, result: res, local: true});
+}
+
 setMode(store.get("tim_mode") || "ingest");
 setView(viewMode);
 setGroup(groupBy);
@@ -1111,7 +1347,7 @@ fetch("/api/job?since=0").then(r => r.json()).then(j => { if (j.running) { jobSi
 fetch("/api/status").then(r => r.json()).then(s => {
 	acct(s);
 	if (s.running) watch();
-	else if (s.items && s.items.length) { items = s.items; $("#root").value = s.root; tagPreview(); loadTree(); render(); }
+	else if (s.items && s.items.length) { items = s.items; $("#root").value = s.root; setLocal(); tagPreview(); loadTree(); render(); }
 });
 </script>
 </body>

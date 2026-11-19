@@ -1,2 +1,5 @@
 __pycache__/
-.env
+# dotfiles (.env, .DS_Store etc), except the repo's own
+.*
+!.gitignore
+!.github/

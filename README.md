@@ -18,6 +18,8 @@ Co-developed with Claude Opus 5.5.
 - **Recycle/Delete** - source files go to the share's `#recycle` and are never deleted outright
 - **Damaged files** - JPEGs that don't decode are flagged and never uploaded or used to upgrade
 - **Accounts** - compatible with multiple immich API keys, picked from a dropdown in the header
+- **Local folder** - scan a folder on the computer you're browsing from: the browser hashes the files itself and only sends names, sizes and SHA-1s. Show and Upload only - nothing can change the local files
+- **External libraries** - assets immich stores with a path hash instead of a file hash are matched on filename + file size, marked with a dashed In immich tag and never treated as exact copies by Recycle
 
 ## Safety
 
@@ -26,9 +28,10 @@ Co-developed with Claude Opus 5.5.
 - **Upgrade checks** - only Verified or approved matches are upgraded, and only after the picture check passes. Thumbnails are fetched from immich only when you upgrade (cached), and a different-looking picture is never upgraded
 - **Undo** - uploads carry a `src_photocopy/...` tag, upgrades get `src_photocopy/upgraded` and every upgrade is logged with both old and new asset ids in `CACHE_DIR/upgrades.jsonl`
 - **Not undoable with tags** - albums made by "Create albums from folders"; favourites/stacks/shared links that have moved onto an upgraded asset
-- **Local files** - never hard-deleted: Delete, Recycle and "Delete source files" all move to the share's `#recycle`
+- **Source files** - never hard-deleted: Delete, Recycle and "Delete source files" all move to the share's `#recycle`
 - **Confirmation** - every action that sends source files to `#recycle` asks first, with a BIG RED BUTTON. Move also asks, but in a friendlier shade of blue
 - **`LIBRARY_PATHS`** - never moved, recycled or deleted from
+- **Local folder uploads** - each file is re-hashed on arrival and refused if it changed since the scan
 
 ## Files
 
